@@ -3,7 +3,74 @@ using Xunit;
 
 namespace Kiota.Builder.Refiners.Tests {
     public class TypeScriptLanguageRefinerTests {
-        private readonly CodeNamespace root = CodeNamespace.InitRootNamespace();
+        private readonly CodeNamespace root;
+        private readonly CodeNamespace graphNS;
+        private readonly CodeClass parentClass;
+        public TypeScriptLanguageRefinerTests() {
+            root = CodeNamespace.InitRootNamespace();
+            graphNS = root.AddNamespace("graph");
+            parentClass = new (graphNS) {
+                Name = "parentClass"
+            };
+            graphNS.AddClass(parentClass);
+        }
+#region common
+        [Fact]
+        public void ReplacesImportsSubNamespace() {
+            var rootNS = parentClass.Parent as CodeNamespace;
+            rootNS.RemoveChildElement(parentClass);
+            graphNS.AddClass(parentClass);
+            var declaration = parentClass.StartBlock as CodeClass.Declaration;
+            var subNS = graphNS.AddNamespace($"{graphNS.Name}.messages");
+            var messageClassDef = new CodeClass(subNS) {
+                Name = "Message",
+            };
+            declaration.Usings.Add(new (parentClass) {
+                Name = "graph",
+                Declaration = new(parentClass) {
+                    Name = "Message",
+                    TypeDefinition = messageClassDef,
+                }
+            });
+            ILanguageRefiner.Refine(new GenerationConfiguration { Language = GenerationLanguage.TypeScript }, root);
+            Assert.Equal("./messages/message", declaration.Usings.First().Declaration.Name);
+        }
+        [Fact]
+        public void ReplacesImportsParentNamespace() {
+            var declaration = parentClass.StartBlock as CodeClass.Declaration;
+            var subNS = root.AddNamespace("messages");
+            var messageClassDef = new CodeClass(subNS) {
+                Name = "Message",
+            };
+            subNS.AddClass(messageClassDef);
+            declaration.Usings.Add(new (parentClass) {
+                Name = "messages",
+                Declaration = new(parentClass) {
+                    Name = "Message",
+                    TypeDefinition = messageClassDef,
+                }
+            });
+            ILanguageRefiner.Refine(new GenerationConfiguration { Language = GenerationLanguage.TypeScript }, root);
+            Assert.Equal("../messages/message", declaration.Usings.First().Declaration.Name);
+        }
+        [Fact]
+        public void ReplacesImportsSameNamespace() {
+            var declaration = parentClass.StartBlock as CodeClass.Declaration;
+            var messageClassDef = new CodeClass(graphNS) {
+                Name = "Message",
+            };
+            declaration.Usings.Add(new (parentClass) {
+                Name = "graph",
+                Declaration = new(parentClass) {
+                    Name = "Message",
+                    TypeDefinition = messageClassDef,
+                }
+            });
+            ILanguageRefiner.Refine(new GenerationConfiguration { Language = GenerationLanguage.TypeScript }, root);
+            Assert.Equal("./message", declaration.Usings.First().Declaration.Name);
+        }
+#endregion
+#region typescript
         private const string httpCoreDefaultName = "IHttpCore";
         private const string factoryDefaultName = "ISerializationWriterFactory";
         private const string deserializeDefaultName = "IDictionary<string, Action<Model, IParseNode>>";
@@ -16,7 +83,7 @@ namespace Kiota.Builder.Refiners.Tests {
                 Name = "break",
                 ClassKind = CodeClassKind.Model
             }).First();
-            ILanguageRefiner.Refine(GenerationLanguage.TypeScript, root);
+            ILanguageRefiner.Refine(new GenerationConfiguration { Language = GenerationLanguage.TypeScript }, root);
             Assert.NotEqual("break", model.Name);
             Assert.Contains("escaped", model.Name);
         }
@@ -29,16 +96,19 @@ namespace Kiota.Builder.Refiners.Tests {
             }).First();
             model.AddProperty(new (model) {
                 Name = "core",
+                PropertyKind = CodePropertyKind.HttpCore,
                 Type = new CodeType(model) {
                     Name = httpCoreDefaultName
                 }
             }, new (model) {
                 Name = "serializerFactory",
+                PropertyKind = CodePropertyKind.SerializerFactory,
                 Type = new CodeType(model) {
                     Name = factoryDefaultName,
                 }
             }, new (model) {
                 Name = "someDate",
+                PropertyKind = CodePropertyKind.Custom,
                 Type = new CodeType(model) {
                     Name = dateTimeOffsetDefaultName,
                 }
@@ -58,6 +128,7 @@ namespace Kiota.Builder.Refiners.Tests {
             }).First();
             executorMethod.AddParameter(new CodeParameter(executorMethod) {
                 Name = "handler",
+                ParameterKind = CodeParameterKind.ResponseHandler,
                 Type = new CodeType(executorMethod) {
                     Name = handlerDefaultName,
                 }
@@ -72,6 +143,7 @@ namespace Kiota.Builder.Refiners.Tests {
             }).First();
             serializationMethod.AddParameter(new CodeParameter(serializationMethod) {
                 Name = "handler",
+                ParameterKind = CodeParameterKind.ResponseHandler,
                 Type = new CodeType(executorMethod) {
                     Name = serializerDefaultName,
                 }
@@ -95,7 +167,7 @@ namespace Kiota.Builder.Refiners.Tests {
                     Name = streamDefaultName
                 }
             });
-            ILanguageRefiner.Refine(GenerationLanguage.TypeScript, root);
+            ILanguageRefiner.Refine(new GenerationConfiguration{ Language = GenerationLanguage.TypeScript }, root);
             Assert.Empty(model.GetChildElements(true).OfType<CodeProperty>().Where(x => httpCoreDefaultName.Equals(x.Type.Name)));
             Assert.Empty(model.GetChildElements(true).OfType<CodeProperty>().Where(x => factoryDefaultName.Equals(x.Type.Name)));
             Assert.Empty(model.GetChildElements(true).OfType<CodeProperty>().Where(x => dateTimeOffsetDefaultName.Equals(x.Type.Name)));
@@ -106,4 +178,5 @@ namespace Kiota.Builder.Refiners.Tests {
             Assert.Empty(model.GetChildElements(true).OfType<CodeMethod>().SelectMany(x => x.Parameters).Where(x => streamDefaultName.Equals(x.Type.Name)));
         }
     }
+#endregion
 }

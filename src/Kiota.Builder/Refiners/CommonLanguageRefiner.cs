@@ -1,13 +1,103 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
+using Kiota.Builder.Extensions;
 using static Kiota.Builder.CodeClass;
 
 namespace Kiota.Builder.Refiners {
     public abstract class CommonLanguageRefiner : ILanguageRefiner
     {
+        protected CommonLanguageRefiner(GenerationConfiguration configuration) {
+            _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
+        }
         public abstract void Refine(CodeNamespace generatedCode);
-
+        internal const string GetterPrefix = "get-";
+        internal const string SetterPrefix = "set-";
+        protected static void CorrectCoreTypesForBackingStoreUsings(CodeElement currentElement, string storeNamespace) {
+            if(currentElement is CodeClass currentClass && currentClass.IsOfKind(CodeClassKind.Model)
+                && currentClass.StartBlock is CodeClass.Declaration currentDeclaration) {
+                foreach(var backingStoreUsing in currentDeclaration.Usings.Where(x => "Microsoft.Kiota.Abstractions.Store".Equals(x.Declaration.Name, StringComparison.OrdinalIgnoreCase))) {
+                    if(backingStoreUsing?.Declaration != null) {
+                        backingStoreUsing.Name = backingStoreUsing.Name.Substring(1); // removing the "I"
+                        backingStoreUsing.Declaration.Name = storeNamespace;
+                    }
+                }
+                var backedModelImplements = currentDeclaration.Implements.FirstOrDefault(x => "IBackedModel".Equals(x.Name, StringComparison.OrdinalIgnoreCase));
+                if(backedModelImplements != null)
+                    backedModelImplements.Name = backedModelImplements.Name.Substring(1); //removing the "I"
+            }
+            CrawlTree(currentElement, (x) => CorrectCoreTypesForBackingStoreUsings(x, storeNamespace));
+        }
+        private static bool DoesAnyParentHaveAPropertyWithDefaultValue(CodeClass current) {
+            if(current.StartBlock is CodeClass.Declaration currentDeclaration &&
+                currentDeclaration.Inherits?.TypeDefinition is CodeClass parentClass) {
+                    if(parentClass.GetChildElements(true).OfType<CodeProperty>().Any(x => !string.IsNullOrEmpty(x.DefaultValue)))
+                        return true;
+                    else
+                        return DoesAnyParentHaveAPropertyWithDefaultValue(parentClass);
+            } else
+                return false;
+        }
+        protected static void AddGetterAndSetterMethods(CodeElement current, HashSet<CodePropertyKind> propertyKindsToAddAccessors, bool removeProperty, bool parameterAsOptional) {
+            if(!(propertyKindsToAddAccessors?.Any() ?? true)) return;
+            if(current is CodeProperty currentProperty &&
+                propertyKindsToAddAccessors.Contains(currentProperty.PropertyKind) &&
+                current.Parent is CodeClass parentClass &&
+                !parentClass.IsOfKind(CodeClassKind.QueryParameters)) {
+                if(removeProperty && currentProperty.IsOfKind(CodePropertyKind.Custom, CodePropertyKind.AdditionalData)) // we never want to remove backing stores
+                    parentClass.RemoveChildElement(currentProperty);
+                else {
+                    currentProperty.Access = AccessModifier.Private;
+                    currentProperty.NamePrefix = "_";
+                }
+                parentClass.AddMethod(new CodeMethod(parentClass) {
+                    Name = $"{GetterPrefix}{current.Name}",
+                    Access = AccessModifier.Public,
+                    IsAsync = false,
+                    MethodKind = CodeMethodKind.Getter,
+                    ReturnType = currentProperty.Type,
+                    Description = $"Gets the {current.Name} property value. {currentProperty.Description}",
+                    AccessedProperty = currentProperty,
+                });
+                if(!currentProperty.ReadOnly) {
+                    var setter = parentClass.AddMethod(new CodeMethod(parentClass) {
+                        Name = $"{SetterPrefix}{current.Name}",
+                        Access = AccessModifier.Public,
+                        IsAsync = false,
+                        MethodKind = CodeMethodKind.Setter,
+                        Description = $"Sets the {current.Name} property value. {currentProperty.Description}",
+                        AccessedProperty = currentProperty,
+                    }).First();
+                    setter.ReturnType = new CodeType(setter) {
+                        Name = "void"
+                    };
+                    setter.Parameters.Add(new(setter) {
+                        Name = "value",
+                        ParameterKind = CodeParameterKind.SetterValue,
+                        Description = $"Value to set for the {current.Name} property.",
+                        Optional = parameterAsOptional,
+                        Type = currentProperty.Type,
+                    });
+                }
+            }
+            CrawlTree(current, x => AddGetterAndSetterMethods(x, propertyKindsToAddAccessors, removeProperty, parameterAsOptional));
+        }
+        protected static void AddConstructorsForDefaultValues(CodeElement current, bool addIfInherited) {
+            if(current is CodeClass currentClass && 
+                (currentClass.GetChildElements(true).OfType<CodeProperty>().Any(x => !string.IsNullOrEmpty(x.DefaultValue)) ||
+                addIfInherited && DoesAnyParentHaveAPropertyWithDefaultValue(currentClass)))
+                currentClass.AddMethod(new CodeMethod(current) {
+                    Name = "constructor",
+                    MethodKind = CodeMethodKind.Constructor,
+                    ReturnType = new CodeType(current) {
+                        Name = "void"
+                    },
+                    IsAsync = false,
+                    Description = $"Instantiates a new {current.Name} and sets the default values."
+                });
+            CrawlTree(current, x => AddConstructorsForDefaultValues(x, addIfInherited));
+        }
         protected static void ReplaceReservedNames(CodeElement current, IReservedNamesProvider provider, Func<string, string> replacement) {
             if(current is CodeClass currentClass && currentClass.StartBlock is CodeClass.Declaration currentDeclaration)
                 currentDeclaration.Usings
@@ -26,7 +116,7 @@ namespace Kiota.Builder.Refiners {
 
         protected static void AddDefaultImports(CodeElement current, Tuple<string, string>[] defaultNamespaces, Tuple<string, string>[] defaultNamespacesForModels, Tuple<string, string>[] defaultNamespacesForRequestBuilders) {
             if(current is CodeClass currentClass) {
-                if(currentClass.ClassKind == CodeClassKind.Model)
+                if(currentClass.IsOfKind(CodeClassKind.Model))
                     currentClass.AddUsing(defaultNamespaces.Union(defaultNamespacesForModels)
                                             .Select(x => {
                                                             var nUsing = new CodeUsing(currentClass) { 
@@ -35,7 +125,7 @@ namespace Kiota.Builder.Refiners {
                                                             nUsing.Declaration = new CodeType(nUsing) { Name = x.Item2, IsExternal = true };
                                                             return nUsing;
                                                         }).ToArray());
-                if(currentClass.ClassKind == CodeClassKind.RequestBuilder)
+                if(currentClass.IsOfKind(CodeClassKind.RequestBuilder))
                     currentClass.AddUsing(defaultNamespaces.Union(defaultNamespacesForRequestBuilders)
                                             .Select(x => {
                                                             var nUsing = new CodeUsing(currentClass) { 
@@ -176,7 +266,7 @@ namespace Kiota.Builder.Refiners {
                     TypeDefinition = indexerClass,
                     Name = indexerClass.Name,
                 };
-                method.GenerationProperties.Add(pathSegmentPropertyName, pathSegment);
+                method.PathSegment = pathSegment;
                 var parameter = new CodeParameter(method) {
                     Name = "id",
                     Optional = false,
@@ -211,6 +301,8 @@ namespace Kiota.Builder.Refiners {
         }
         private static readonly CodeUsingComparer usingComparerWithDeclarations = new CodeUsingComparer(true);
         private static readonly CodeUsingComparer usingComparerWithoutDeclarations = new CodeUsingComparer(false);
+        protected readonly GenerationConfiguration _configuration;
+
         protected static void AddPropertiesAndMethodTypesImports(CodeElement current, bool includeParentNamespaces, bool includeCurrentNamespace, bool compareOnDeclaration) {
             if(current is CodeClass currentClass) {
                 var currentClassNamespace = currentClass.GetImmediateParentOfType<CodeNamespace>();
@@ -251,6 +343,76 @@ namespace Kiota.Builder.Refiners {
                     currentClass.AddUsing(usingsToAdd);
             }
             CrawlTree(current, (x) => AddPropertiesAndMethodTypesImports(x, includeParentNamespaces, includeCurrentNamespace, compareOnDeclaration));
+        }
+        protected static void ReplaceRelativeImportsByImportPath(CodeElement currentElement, char namespaceNameSeparator) {
+            if(currentElement is CodeClass currentClass && currentClass.StartBlock is CodeClass.Declaration currentDeclaration
+                && currentElement.Parent is CodeNamespace currentNamespace) {
+                currentDeclaration.Usings.RemoveAll(x => currentDeclaration.Name.Equals(x.Declaration.Name, StringComparison.OrdinalIgnoreCase));
+                foreach(var codeUsing in currentDeclaration.Usings
+                                            .Where(x => (!x.Declaration?.IsExternal) ?? true)) {
+                    var relativeImportPath = GetRelativeImportPathForUsing(codeUsing, currentNamespace, namespaceNameSeparator);
+                    codeUsing.Name = $"{codeUsing.Declaration?.Name?.ToFirstCharacterUpperCase() ?? codeUsing.Name}";
+                    codeUsing.Declaration = new CodeType(codeUsing) {
+                        Name = $"{relativeImportPath}{(string.IsNullOrEmpty(relativeImportPath) ? codeUsing.Name : codeUsing.Declaration.Name.ToFirstCharacterLowerCase())}",
+                        IsExternal = false,
+                    };
+                }
+            }
+
+            CrawlTree(currentElement, x => ReplaceRelativeImportsByImportPath(x, namespaceNameSeparator));
+        }
+        private static string GetRelativeImportPathForUsing(CodeUsing codeUsing, CodeNamespace currentNamespace, char namespaceNameSeparator) {
+            if(codeUsing.Declaration == null)
+                return string.Empty;//it's an external import, add nothing
+            var typeDef = codeUsing.Declaration.TypeDefinition;
+
+            if(typeDef == null)
+                return "./"; // it's relative to the folder, with no declaration (default failsafe)
+            else
+                return GetImportRelativePathFromNamespaces(currentNamespace, 
+                                                        typeDef.GetImmediateParentOfType<CodeNamespace>(), namespaceNameSeparator);
+        }
+        private static string GetImportRelativePathFromNamespaces(CodeNamespace currentNamespace, CodeNamespace importNamespace, char namespaceNameSeparator) {
+            if(currentNamespace == null)
+                throw new ArgumentNullException(nameof(currentNamespace));
+            else if (importNamespace == null)
+                throw new ArgumentNullException(nameof(importNamespace));
+            else if(currentNamespace.Name.Equals(importNamespace.Name, StringComparison.OrdinalIgnoreCase)) // we're in the same namespace
+                return "./";
+            else
+                return GetRelativeImportPathFromSegments(currentNamespace, importNamespace, namespaceNameSeparator);                
+        }
+        private static string GetRelativeImportPathFromSegments(CodeNamespace currentNamespace, CodeNamespace importNamespace, char namespaceNameSeparator) {
+            var currentNamespaceSegements = currentNamespace
+                                    .Name
+                                    .Split(namespaceNameSeparator, StringSplitOptions.RemoveEmptyEntries);
+            var importNamespaceSegments = importNamespace
+                                .Name
+                                .Split(namespaceNameSeparator, StringSplitOptions.RemoveEmptyEntries);
+            var importNamespaceSegmentsCount = importNamespaceSegments.Length;
+            var currentNamespaceSegementsCount = currentNamespaceSegements.Length;
+            var deeperMostSegmentIndex = 0;
+            while(deeperMostSegmentIndex < Math.Min(importNamespaceSegmentsCount, currentNamespaceSegementsCount)) {
+                if(currentNamespaceSegements.ElementAt(deeperMostSegmentIndex).Equals(importNamespaceSegments.ElementAt(deeperMostSegmentIndex), StringComparison.OrdinalIgnoreCase))
+                    deeperMostSegmentIndex++;
+                else
+                    break;
+            }
+            if (deeperMostSegmentIndex == currentNamespaceSegementsCount) { // we're in a parent namespace and need to import with a relative path
+                return "./" + GetRemainingImportPath(importNamespaceSegments.Skip(deeperMostSegmentIndex));
+            } else { // we're in a sub namespace and need to go "up" with dot dots
+                var upMoves = currentNamespaceSegementsCount - deeperMostSegmentIndex;
+                var upMovesBuilder = new StringBuilder();
+                for(var i = 0; i < upMoves; i++)
+                    upMovesBuilder.Append("../");
+                return upMovesBuilder.ToString() + GetRemainingImportPath(importNamespaceSegments.Skip(deeperMostSegmentIndex));
+            }
+        }
+        private static string GetRemainingImportPath(IEnumerable<string> remainingSegments) {
+            if(remainingSegments.Any())
+                return remainingSegments.Select(x => x.ToFirstCharacterLowerCase()).Aggregate((x, y) => $"{x}/{y}") + '/';
+            else
+                return string.Empty;
         }
         protected static void CrawlTree(CodeElement currentElement, Action<CodeElement> function) {
             foreach(var childElement in currentElement.GetChildElements())
