@@ -10,7 +10,7 @@ namespace Kiota.Builder.Writers.Java {
             if(!codeElement.Options.Any())
                 return;
             var enumName = codeElement.Name.ToFirstCharacterUpperCase();
-            writer.WriteLines($"package {(codeElement.Parent as CodeNamespace)?.Name};",
+            writer.WriteLines($"package {(codeElement.Parent as CodeNamespace)?.Name?.ToLower()};",
                 string.Empty,
                 "import com.microsoft.kiota.serialization.ValuedEnum;",
                 "import java.util.Objects;",

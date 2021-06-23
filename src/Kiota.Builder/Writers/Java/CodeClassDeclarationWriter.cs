@@ -9,7 +9,7 @@ namespace Kiota.Builder.Writers.Java {
         public override void WriteCodeElement(CodeClass.Declaration codeElement, LanguageWriter writer)
         {
             if(codeElement?.Parent?.Parent is CodeNamespace ns) {
-                writer.WriteLine($"package {ns.Name};");
+                writer.WriteLine($"package {ns.Name.ToLower()};");
                 writer.WriteLine();
                 codeElement.Usings
                     .Where(x => x.Declaration.IsExternal || !x.Declaration.Name.Equals(codeElement.Name, StringComparison.OrdinalIgnoreCase)) // needed for circular requests patterns like message folder
