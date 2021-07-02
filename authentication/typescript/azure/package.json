@@ -30,11 +30,11 @@
     "registry": "https://npm.pkg.github.com"
   },
   "dependencies": {
-    "@azure/core-auth": "^1.3.0",
+    "@azure/core-auth": "^1.3.2",
     "@microsoft/kiota-abstractions": "^1.0.12"
   },
   "devDependencies": {
-    "@types/node": "^15.12.5",
+    "@types/node": "^15.14.0",
     "typescript": "^4.3.5"
   }
 }
