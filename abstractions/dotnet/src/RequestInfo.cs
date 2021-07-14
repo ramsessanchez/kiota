@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Linq;
 using System.Collections.Generic;
 using System.IO;
 using Microsoft.Kiota.Abstractions.Serialization;
@@ -12,6 +13,30 @@ namespace Microsoft.Kiota.Abstractions
         public IDictionary<string, object> QueryParameters { get; set; } = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
         public IDictionary<string, string> Headers { get; set; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         public Stream Content { get; set; }
+        private Dictionary<string, IMiddlewareOption> _middlewareOptions = new Dictionary<string, IMiddlewareOption>(StringComparer.OrdinalIgnoreCase);
+        /// <summary>
+        /// Gets the middleware options for this request. Options are unique by type. If an option of the same type is added twice, the last one wins.
+        /// </summary>
+        public IEnumerable<IMiddlewareOption> MiddlewareOptions { get { return _middlewareOptions.Values; } }
+        /// <summary>
+        /// Adds a middleware option to the request.
+        /// </summary>
+        /// <param name="middlewareOption">The middleware option to add.</param>
+        public void AddMiddlewareOptions(params IMiddlewareOption[] options) {
+            if(!options?.Any() ?? false) throw new ArgumentNullException(nameof(options));
+            foreach(var option in options.Where(x => x != null))
+                if(!_middlewareOptions.TryAdd(option.GetType().FullName, option))
+                    _middlewareOptions[option.GetType().FullName] = option;
+        }
+        /// <summary>
+        /// Removes given middleware options from the current request.
+        /// </summary>
+        /// <param name="options">Middleware options to remove.</param>
+        public void RemoveMiddlewareOptions(params IMiddlewareOption[] options) {
+            if(!options?.Any() ?? false) throw new ArgumentNullException(nameof(options));
+            foreach(var optionName in options.Where(x => x != null).Select(x => x.GetType().FullName))
+                _middlewareOptions.Remove(optionName);
+        }
         private const string binaryContentType = "application/octet-stream";
         private const string contentTypeHeader = "Content-Type";
         public void SetStreamContent(Stream content) {
